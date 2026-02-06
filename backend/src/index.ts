@@ -15,6 +15,8 @@ import { initializeDatabase, closeDatabase } from './db/database.js';
 import signalsRouter from './routes/signals.js';
 import tradesRouter from './routes/trades.js';
 import adminRouter from './routes/admin.js';
+import analyticsRouter from './routes/analytics.js';
+import portfolioRouter from './routes/portfolio.js';
 
 // Import scheduler
 import { initializeScheduler } from './jobs/scheduler.js';
@@ -34,6 +36,8 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use('/api/signals', signalsRouter);
 app.use('/api/trades', tradesRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/analytics', analyticsRouter);
+app.use('/api/portfolio', portfolioRouter);
 
 // Health check endpoint
 app.get('/api/health', (req: Request, res: Response) => {

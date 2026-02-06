@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase } from '../db/database.js';
 import { APIResponse, ScanResult } from '../types/index.js';
+import { performDailyScan } from '../jobs/scan.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
@@ -48,29 +50,22 @@ router.get('/health', async (req: Request, res: Response) => {
  */
 router.post('/scan', async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
     const { tickers_override } = req.body;
 
-    // This endpoint should trigger the scan engine
-    // For now, we'll just log the request
+    // Trigger scan asynchronously (don't wait for completion)
+    performDailyScan('manual', tickers_override)
+      .catch(error => {
+        console.error('Background scan failed:', error);
+      });
 
     const scanId = generateScanId();
-    const now = new Date().toISOString();
-
-    // Create scan history record
-    await db.run(
-      `INSERT INTO scan_history 
-       (id, scan_timestamp, scan_trigger, scan_status, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [scanId, now, 'manual', 'in_progress', now]
-    );
 
     res.json({
       success: true,
       data: {
         scanId,
         status: 'initiated',
-        message: 'Scan started. Check /api/admin/health for progress.',
+        message: 'Scan started in background. Check /api/admin/health for progress.',
       },
       timestamp: new Date().toISOString(),
     } as APIResponse<any>);
@@ -96,11 +91,40 @@ router.get('/settings', async (req: Request, res: Response) => {
       minVolumeFilter: 100000, // Min daily volume
       liquidityFilter: true,
       timeoutMinutes: 5,
+      maxRetries: 3,
     };
 
     res.json({
       success: true,
       data: settings,
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  }
+});
+
+/**
+ * GET /api/admin/scan-history
+ * Get recent scan history
+ */
+router.get('/scan-history', async (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const { limit = 20 } = req.query;
+
+    const scans = await db.all(
+      'SELECT * FROM scan_history ORDER BY created_at DESC LIMIT ?',
+      [limit]
+    );
+
+    res.json({
+      success: true,
+      data: scans,
       timestamp: new Date().toISOString(),
     } as APIResponse<any>);
   } catch (error) {
