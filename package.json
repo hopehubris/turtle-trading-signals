@@ -1,0 +1,48 @@
+{
+  "name": "turtle-trading-signals-admiral-mondy",
+  "version": "1.0.0",
+  "description": "Russell 2000 Turtle Trading signals generator with web UI and portfolio tracking",
+  "main": "dist/backend/src/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/backend/src/index.js",
+    "dev": "tsx watch backend/src/index.ts",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "db:migrate": "node dist/backend/src/db/migrate.js",
+    "db:seed": "node dist/backend/src/db/seed.js",
+    "db:reset": "rm -f data/signals.db && npm run db:migrate",
+    "lint": "eslint .",
+    "frontend:dev": "cd frontend && npm run dev",
+    "frontend:build": "cd frontend && npm run build"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6",
+    "sqlite": "^5.0.1",
+    "node-cron": "^3.0.2",
+    "agenda": "^5.0.0",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "uuid": "^9.0.1",
+    "date-fns": "^2.30.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.17",
+    "@types/node": "^20.10.5",
+    "@types/jest": "^29.5.11",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^6.3.3",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.16.0",
+    "@typescript-eslint/parser": "^6.16.0"
+  }
+}
