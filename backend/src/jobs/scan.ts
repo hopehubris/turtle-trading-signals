@@ -135,9 +135,22 @@ export async function performDailyScan(
             }
           }
           
-          // Store in cache for subsequent scans
+          // Store in cache for subsequent scans and persist to database
           if (priceData && priceData.length >= 21) {
             priceCache.set(ticker, priceData);
+            
+            // Persist to database for Reports page
+            try {
+              for (const bar of priceData) {
+                await db.run(
+                  `INSERT OR REPLACE INTO price_cache (ticker, date, open, high, low, close, volume, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  [ticker, bar.date, bar.open, bar.high, bar.low, bar.close, bar.volume, new Date().toISOString()]
+                );
+              }
+            } catch (e) {
+              console.warn(`[Scan] Failed to persist price cache for ${ticker}:`, e instanceof Error ? e.message : 'unknown error');
+            }
           }
         }
 
