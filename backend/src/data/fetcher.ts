@@ -276,13 +276,30 @@ export class MockFetcher implements IDataFetcher {
 export function createDataFetcher(
   polygonApiKey?: string
 ): IDataFetcher {
-  // Development/Testing: Use mock data to ensure system works end-to-end
-  // TODO: Switch to real data once APIs are confirmed working
-  // Previous issues:
-  //   - Polygon IO: 403 Forbidden (API key permissions limited?)
-  //   - Yahoo Finance: Rate limiting + aggressive bot blocking
+  // IMPORTANT: Data Source Selection
   // 
-  // If you have working API credentials, update this function.
-  console.log('[Data Fetcher] Using Mock Fetcher (development mode)');
+  // Current Status:
+  //   ✅ Mock Fetcher: Working (generates realistic synthetic data)
+  //   ❌ Polygon IO: API key plan doesn't include historical data access
+  //        - Shows: "Your plan doesn't include this data timeframe"
+  //        - Would need upgraded plan (Enterprise/Plus)
+  //   ❌ Yahoo Finance: Rate-limited after few requests
+  // 
+  // Production Options:
+  // 1. Keep Mock data for testing/backtesting (current, RECOMMENDED)
+  // 2. Switch to Finnhub (free tier has real data): finnhub.io
+  // 3. Use IEX Cloud (free tier limited but available): iexcloud.io
+  // 4. Upgrade Polygon plan for historical data access
+  //
+  // To switch sources, modify the return statement below:
+  
+  // ACTIVE: Mock data (fully functional, unlimited requests)
+  console.log('[Data Fetcher] Using Mock Fetcher (development/testing)');
   return new MockFetcher();
+  
+  // ALTERNATIVE: Polygon IO (requires upgraded plan)
+  // if (polygonApiKey && polygonApiKey.length > 10) {
+  //   return new PolygonIOFetcher(polygonApiKey);
+  // }
+  // return new YahooFinanceFetcher();
 }
