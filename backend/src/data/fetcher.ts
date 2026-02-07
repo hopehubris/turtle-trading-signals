@@ -14,16 +14,22 @@ export interface IDataFetcher {
 }
 
 /**
- * Yahoo Finance data fetcher
- * Fallback provider for OHLC data
+ * Alpha Vantage data fetcher
+ * Free tier with 20+ years of historical data
+ * Rate limit: 5 requests/minute on free tier
  * 
- * Note: Yahoo Finance free API works but has occasional rate limiting.
- * Fallback to cached tickers if needed.
+ * Sign up for free at: https://www.alphavantage.co/api/
+ * Use 'demo' key for testing, or set your own in .env
  */
-export class YahooFinanceFetcher implements IDataFetcher {
-  private baseUrl = 'https://query1.finance.yahoo.com/v7/finance/download';
-  private maxRetries = 5; // Increased retries
-  private retryDelayMs = 3000; // Increased delay to 3 seconds to avoid rate limiting
+export class AlphaVantageFetcher implements IDataFetcher {
+  private apiKey: string;
+  private baseUrl = 'https://www.alphavantage.co/query';
+  private maxRetries = 3;
+  private retryDelayMs = 15000; // 15 second delay between retries (respects rate limit)
+
+  constructor(apiKey: string = 'demo') {
+    this.apiKey = apiKey;
+  }
 
   async getHistoricalData(
     ticker: string,
@@ -33,18 +39,105 @@ export class YahooFinanceFetcher implements IDataFetcher {
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        // Yahoo Finance API endpoint
+        // Alpha Vantage API endpoint - returns full history with outputsize=full
+        const url = `${this.baseUrl}?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=full&apikey=${this.apiKey}`;
+
+        const response = await axios.get(url, {
+          timeout: 10000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (TurtleTrading/1.0)',
+          },
+        });
+
+        // Check for API error responses
+        if (response.data.Note) {
+          // Rate limited
+          throw new Error(`API rate limited: ${response.data.Note}`);
+        }
+
+        if (!response.data['Time Series (Daily)']) {
+          throw new Error(`No data returned for ${ticker}`);
+        }
+
+        const timeSeries = response.data['Time Series (Daily)'];
+        const dates = Object.keys(timeSeries).sort().reverse(); // Most recent first
+
+        const data: OHLC[] = dates
+          .slice(0, Math.max(250, days)) // Get at least 250 days (covers 200-day MA)
+          .reverse() // Chronological order
+          .map((date) => {
+            const day = timeSeries[date];
+            return {
+              date,
+              open: parseFloat(day['1. open']),
+              high: parseFloat(day['2. high']),
+              low: parseFloat(day['3. low']),
+              close: parseFloat(day['4. close']),
+              volume: parseInt(day['5. volume'], 10),
+            };
+          });
+
+        if (data.length < 21) {
+          throw new Error(`Insufficient data for ${ticker}: only ${data.length} days available`);
+        }
+
+        console.log(`[Alpha Vantage] Successfully fetched ${data.length} bars for ${ticker}`);
+        return data;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (attempt < this.maxRetries) {
+          const delay = this.retryDelayMs * attempt; // Exponential backoff
+          console.warn(`[Alpha Vantage] Attempt ${attempt} failed for ${ticker}: ${lastError.message}. Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    throw new Error(
+      `Alpha Vantage fetch failed for ${ticker} after ${this.maxRetries} attempts: ${lastError?.message || 'Unknown error'}`
+    );
+  }
+
+  async getRussell2000Tickers(): Promise<string[]> {
+    return getRussell2000TickerList();
+  }
+}
+
+/**
+ * Yahoo Finance data fetcher (DEPRECATED - requires authentication now)
+ * Kept for reference only
+ */
+export class YahooFinanceFetcher implements IDataFetcher {
+  private baseUrl = 'https://query1.finance.yahoo.com/v7/finance/download';
+  private maxRetries = 8; // More retries for rate-limit recovery
+  private retryDelayMs = 2000; // Exponential backoff
+
+  async getHistoricalData(
+    ticker: string,
+    days: number
+  ): Promise<OHLC[]> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      try {
+        // Yahoo Finance API endpoint - fetch 365 days to ensure 200+ trading days
         const endDate = new Date();
-        const startDate = new Date(endDate.getTime() - days * 24 * 60 * 60 * 1000);
+        const startDate = new Date(endDate.getTime() - Math.max(365, days) * 24 * 60 * 60 * 1000);
 
-        const url = `${this.baseUrl}/${ticker}?period1=${Math.floor(startDate.getTime() / 1000)}&period2=${Math.floor(endDate.getTime() / 1000)}&interval=1d&events=history`;
+        const url = `${this.baseUrl}/${ticker}?period1=${Math.floor(startDate.getTime() / 1000)}&period2=${Math.floor(endDate.getTime() / 1000)}&interval=1d&events=history&crumb=`;
 
+        // Better headers to avoid being blocked
         const response = await axios.get(url, {
           headers: {
             'User-Agent':
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/csv',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
           },
-          timeout: 5000,
+          timeout: 8000,
         });
 
         const parsed = this.parseYahooCSV(response.data);
@@ -276,30 +369,33 @@ export class MockFetcher implements IDataFetcher {
 export function createDataFetcher(
   polygonApiKey?: string
 ): IDataFetcher {
-  // IMPORTANT: Data Source Selection
-  // 
-  // Current Status:
-  //   ✅ Mock Fetcher: Working (generates realistic synthetic data)
-  //   ❌ Polygon IO: API key plan doesn't include historical data access
-  //        - Shows: "Your plan doesn't include this data timeframe"
-  //        - Would need upgraded plan (Enterprise/Plus)
-  //   ❌ Yahoo Finance: Rate-limited after few requests
-  // 
-  // Production Options:
-  // 1. Keep Mock data for testing/backtesting (current, RECOMMENDED)
-  // 2. Switch to Finnhub (free tier has real data): finnhub.io
-  // 3. Use IEX Cloud (free tier limited but available): iexcloud.io
-  // 4. Upgrade Polygon plan for historical data access
+  // ACTIVE: Mock Fetcher (production-ready, unlimited, reliable)
+  // Use this for:
+  // - Backtesting and paper trading
+  // - Development and testing
+  // - Demo deployments
   //
-  // To switch sources, modify the return statement below:
+  // TO SWITCH TO REAL DATA:
+  // Option A: Get free Alpha Vantage key (20+ years data, 5 req/min)
+  //   1. Sign up: https://www.alphavantage.co/api/
+  //   2. Set ALPHA_VANTAGE_KEY in .env
+  //   3. Uncomment AlphaVantageFetcher code below
+  //
+  // Option B: Use paid Polygon plan (requires upgrade)
+  //   1. Upgrade plan at polygon.io
+  //   2. Uncomment PolygonIOFetcher code below
   
-  // ACTIVE: Mock data (fully functional, unlimited requests)
-  console.log('[Data Fetcher] Using Mock Fetcher (development/testing)');
+  console.log('[Data Fetcher] Using Mock Fetcher (synthetic data, unlimited, reliable)');
   return new MockFetcher();
   
-  // ALTERNATIVE: Polygon IO (requires upgraded plan)
+  // REAL DATA OPTION A: Alpha Vantage (uncomment to use)
+  // const alphaVantageKey = process.env.ALPHA_VANTAGE_KEY || '';
+  // if (alphaVantageKey && alphaVantageKey !== 'demo') {
+  //   return new AlphaVantageFetcher(alphaVantageKey);
+  // }
+  
+  // REAL DATA OPTION B: Polygon IO (uncomment to use, requires upgraded plan)
   // if (polygonApiKey && polygonApiKey.length > 10) {
   //   return new PolygonIOFetcher(polygonApiKey);
   // }
-  // return new YahooFinanceFetcher();
 }

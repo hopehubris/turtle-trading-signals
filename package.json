@@ -29,7 +29,8 @@
     "node-cron": "^3.0.2",
     "sqlite": "^5.0.1",
     "sqlite3": "^5.1.6",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "yfinance": "^0.0.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
