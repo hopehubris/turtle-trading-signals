@@ -2,8 +2,9 @@ import { getDatabase } from '../db/database.js';
 import { v4 as uuidv4 } from 'uuid';
 import { ScanTrigger, ScanStatus } from '../types/index.js';
 import { createDataFetcher } from '../data/fetcher.js';
-import { generateSignal } from '../engine/signals.js';
+import { generateSignalV2 } from '../engine/signals.js';
 import { getRussell2000Tickers } from '../data/russell2000.js';
+import { ScanConfig } from '../engine/types.js';
 
 /**
  * Perform a daily Turtle Trading scan
@@ -11,24 +12,34 @@ import { getRussell2000Tickers } from '../data/russell2000.js';
  * Steps:
  * 1. Fetch Russell 2000 tickers
  * 2. Get historical data for each ticker
- * 3. Calculate Turtle signals for each ticker
+ * 3. Calculate Turtle signals for each ticker using specified system and config
  * 4. Store signals in database
  * 5. Update scan history
  */
 export async function performDailyScan(
   trigger: ScanTrigger,
-  tickersOverride?: string[]
+  tickersOverride?: string[],
+  config?: ScanConfig
 ): Promise<void> {
   const db = getDatabase();
   const scanHistoryId = uuidv4();
   const startTime = Date.now();
   const now = new Date().toISOString();
 
+  // Default config if not provided
+  const scanConfig: ScanConfig = config || {
+    system: 'system1',
+    useTrendFilter: true,
+    riskPerTrade: 2,
+    stopLossMultiplier: 2.0,
+  };
+
   let tickers: string[] = [];
   let tickersScanned = 0;
   let signalsGenerated = 0;
   let buySignals = 0;
   let sellSignals = 0;
+  let filteredSignals = 0;
   let scanStatus: ScanStatus = 'in_progress';
   let errorMessage: string | undefined;
 
@@ -42,20 +53,35 @@ export async function performDailyScan(
     );
 
     console.log(`[Scan ${scanHistoryId}] Starting scan with trigger: ${trigger}`);
+    console.log(`[Scan ${scanHistoryId}] Config: system=${scanConfig.system}, trendFilter=${scanConfig.useTrendFilter}, stopLossMultiplier=${scanConfig.stopLossMultiplier}`);
 
     // Get tickers to scan
     if (tickersOverride && tickersOverride.length > 0) {
       tickers = tickersOverride;
     } else {
+      // Try custom tickers first
       try {
-        tickers = await getRussell2000Tickers();
+        const customTickers = await db.all('SELECT ticker FROM custom_tickers ORDER BY ticker');
+        if (customTickers && customTickers.length > 0) {
+          tickers = customTickers.map((row: any) => row.ticker);
+          console.log(`[Scan ${scanHistoryId}] Using ${tickers.length} custom tickers`);
+        }
       } catch (e) {
-        console.warn('Failed to get Russell 2000 tickers, using fallback list');
-        tickers = [
-          'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA',
-          'META', 'NVDA', 'JPM', 'V', 'WMT',
-          'JNJ', 'PG', 'MA', 'UNH', 'HDFC',
-        ];
+        console.warn('Custom tickers table not found, using default Russell 2000');
+      }
+
+      // Fall back to Russell 2000 if no custom tickers
+      if (tickers.length === 0) {
+        try {
+          tickers = await getRussell2000Tickers();
+        } catch (e) {
+          console.warn('Failed to get Russell 2000 tickers, using fallback list');
+          tickers = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA',
+            'META', 'NVDA', 'JPM', 'V', 'WMT',
+            'JNJ', 'PG', 'MA', 'UNH', 'HDFC',
+          ];
+        }
       }
     }
 
@@ -67,6 +93,9 @@ export async function performDailyScan(
     // Scan each ticker
     for (const ticker of tickers) {
       try {
+        // Add delay between requests to avoid rate limiting (500ms)
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
         // Fetch historical data (21+ days)
         const priceData = await fetcher.getHistoricalData(ticker, 30);
 
@@ -77,14 +106,19 @@ export async function performDailyScan(
           continue;
         }
 
-        // Calculate signal
+        // Calculate signal using new engine
         try {
-          const signal = generateSignal(ticker, priceData);
+          const signalCalc = generateSignalV2(ticker, priceData, scanConfig);
 
-          // Store in database if signal is triggered
-          if (signal.buySignal || signal.sellSignal) {
-            const signalType = signal.buySignal ? 'buy' : 'sell';
+          // Get the signal result from the selected system
+          const systemSignal = scanConfig.system === 'system1' ? signalCalc.system1 : signalCalc.system2;
+          
+          // Check if signal was generated (not filtered by trend)
+          if (systemSignal.buySignal || systemSignal.sellSignal) {
+            const signalType = systemSignal.buySignal ? 'buy' : 'sell';
             const signalId = uuidv4();
+            const systemUsed = scanConfig.system === 'system1' ? 'System 1 (20-day)' : 'System 2 (55-day)';
+            const trendFilterInfo = scanConfig.useTrendFilter ? ` [Trend Filter: ${signalCalc.trendAnalysis.context}]` : '';
 
             await db.run(
               `INSERT INTO signals 
@@ -94,12 +128,12 @@ export async function performDailyScan(
                 signalId,
                 ticker,
                 signalType,
-                signal.entryPrice,
-                signal.stopLoss,
-                signal.date,
+                systemSignal.entryPrice,
+                systemSignal.stopLoss,
+                signalCalc.date,
                 scanHistoryId,
                 'active',
-                signal.reason || '',
+                `${systemUsed}: ${systemSignal.reason}${trendFilterInfo}`,
               ]
             );
 
@@ -110,7 +144,11 @@ export async function performDailyScan(
               sellSignals++;
             }
 
-            console.log(`[Scan] Signal generated for ${ticker}: ${signalType} at $${signal.entryPrice}`);
+            console.log(`[Scan] Signal generated for ${ticker}: ${signalType} at $${systemSignal.entryPrice?.toFixed(2)} using ${scanConfig.system}`);
+          } else if (systemSignal.trendFiltered) {
+            // Track filtered signals for analysis
+            filteredSignals++;
+            console.log(`[Scan] Signal filtered for ${ticker} (trend filter): ${systemSignal.reason}`);
           }
         } catch (signalError) {
           console.warn(
@@ -144,7 +182,7 @@ export async function performDailyScan(
 
     scanStatus = 'completed';
     console.log(
-      `[Scan ${scanHistoryId}] Completed in ${executionTime}ms - Generated ${signalsGenerated} signals (${buySignals} buy, ${sellSignals} sell)`
+      `[Scan ${scanHistoryId}] Completed in ${executionTime}ms - Generated ${signalsGenerated} signals (${buySignals} buy, ${sellSignals} sell) | Filtered: ${filteredSignals} | System: ${scanConfig.system} | Trend Filter: ${scanConfig.useTrendFilter}`
     );
   } catch (error) {
     scanStatus = 'failed';

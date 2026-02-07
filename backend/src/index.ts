@@ -6,7 +6,9 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
 // Load environment variables
-dotenv.config();
+// Load .env.production if NODE_ENV=production, otherwise .env
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
+dotenv.config({ path: envFile });
 
 // Import database
 import { initializeDatabase, closeDatabase } from './db/database.js';
@@ -24,13 +26,17 @@ import { initializeScheduler } from './jobs/scheduler.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app: Express = express();
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT || '3001', 10);
 const DB_PATH = process.env.DB_PATH || 'data/signals.db';
 
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+// Serve frontend static files
+const frontendPath = path.join(path.dirname(__dirname), '..', '..', 'frontend', 'dist');
+app.use(express.static(frontendPath));
 
 // API Routes
 app.use('/api/signals', signalsRouter);
@@ -50,13 +56,9 @@ app.get('/api/health', (req: Request, res: Response) => {
   });
 });
 
-// 404 handler
-app.use((req: Request, res: Response) => {
-  res.status(404).json({
-    success: false,
-    error: `Endpoint not found: ${req.method} ${req.path}`,
-    timestamp: new Date().toISOString(),
-  });
+// Serve frontend for all non-API routes (SPA fallback)
+app.get('*', (req: Request, res: Response) => {
+  res.sendFile(path.join(frontendPath, 'index.html'));
 });
 
 // Start server
@@ -70,13 +72,14 @@ async function startServer(): Promise<void> {
     console.log('Initializing job scheduler...');
     initializeScheduler();
 
-    // Start Express server
-    app.listen(PORT, () => {
+    // Start Express server (bind to 0.0.0.0 for network access)
+    app.listen(PORT, '0.0.0.0', () => {
       console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║       Turtle Trading Signals Server Started               ║
 ║                                                            ║
-║  Server: http://localhost:${PORT}                          ║
+║  Server: http://0.0.0.0:${PORT}                            ║
+║  Access: http://192.168.1.51:${PORT}                       ║
 ║  Database: ${DB_PATH}                  ║
 ║  API: /api/signals, /api/trades, /api/admin               ║
 ║                                                            ║

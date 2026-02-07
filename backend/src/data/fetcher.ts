@@ -22,8 +22,8 @@ export interface IDataFetcher {
  */
 export class YahooFinanceFetcher implements IDataFetcher {
   private baseUrl = 'https://query1.finance.yahoo.com/v7/finance/download';
-  private maxRetries = 3;
-  private retryDelayMs = 1000;
+  private maxRetries = 5; // Increased retries
+  private retryDelayMs = 3000; // Increased delay to 3 seconds to avoid rate limiting
 
   async getHistoricalData(
     ticker: string,

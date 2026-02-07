@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.turtle-trading.signals</string>
+	<key>Program</key>
+	<string>/usr/local/bin/pm2</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>start</string>
+		<string>/Users/ashisheth/.openclaw/workspace/turtle-trading-signals-AdmiralMondy/ecosystem.config.cjs</string>
+		<string>--env</string>
+		<string>production</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/ashisheth/.openclaw/workspace/turtle-trading-signals-AdmiralMondy</string>
+	<key>StandardOutPath</key>
+	<string>/Users/ashisheth/.openclaw/workspace/turtle-trading-signals-AdmiralMondy/logs/launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/ashisheth/.openclaw/workspace/turtle-trading-signals-AdmiralMondy/logs/launchd-error.log</string>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>300</integer>
+</dict>
+</plist>
