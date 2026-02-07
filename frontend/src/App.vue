@@ -5,8 +5,9 @@
         <div class="nav-brand">🐢 Turtle Trading Signals</div>
         <div class="nav-links">
           <router-link to="/dashboard" :class="{ active: route.path === '/dashboard' || route.path === '/' }">Dashboard</router-link>
+          <router-link to="/signals" :class="{ active: route.path === '/signals' }">Signals</router-link>
+          <router-link to="/reports" :class="{ active: route.path === '/reports' }">Reports</router-link>
           <router-link to="/trades" :class="{ active: route.path === '/trades' }">Trades</router-link>
-          <router-link to="/analytics" :class="{ active: route.path === '/analytics' }">Analytics</router-link>
           <router-link to="/admin" :class="{ active: route.path === '/admin' }">Admin</router-link>
         </div>
       </div>

@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS portfolio_positions (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Custom Tickers Table: Store user-uploaded ticker lists
+CREATE TABLE IF NOT EXISTS custom_tickers (
+  id TEXT PRIMARY KEY,
+  ticker TEXT UNIQUE NOT NULL,
+  added_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Russell 2000 Cache Table: Cache daily price data
 CREATE TABLE IF NOT EXISTS price_cache (
   ticker TEXT NOT NULL,

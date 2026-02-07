@@ -3,6 +3,7 @@ import { getDatabase } from '../db/database.js';
 import { APIResponse, ScanResult } from '../types/index.js';
 import { performDailyScan } from '../jobs/scan.js';
 import { ScanConfig } from '../engine/types.js';
+import { priceCache } from '../services/priceCache.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
@@ -166,6 +167,98 @@ router.get('/scan-history', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/admin/scan-progress
+ * Get current scan progress (for UI updates)
+ */
+router.get('/scan-progress', async (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+
+    // Get the most recent scan
+    const lastScan = await db.get(
+      'SELECT * FROM scan_history ORDER BY created_at DESC LIMIT 1'
+    );
+
+    if (!lastScan) {
+      return res.json({
+        success: true,
+        data: {
+          status: 'idle',
+          progress: 0,
+          message: 'No scan in progress',
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // If scan is not in progress, return completed status
+    if (lastScan.scan_status !== 'in_progress') {
+      const scannedCount = lastScan.tickers_scanned || 0;
+      const signalsCount = lastScan.signals_generated || 0;
+      let completionMessage = '';
+      
+      if (lastScan.scan_status === 'completed') {
+        completionMessage = `Scan completed: ${scannedCount} tickers processed, ${signalsCount} signals generated`;
+      } else if (lastScan.scan_status === 'failed') {
+        completionMessage = `Scan failed: ${lastScan.error_message || 'Unknown error'}`;
+      } else {
+        completionMessage = `Scan ${lastScan.scan_status}`;
+      }
+      
+      return res.json({
+        success: true,
+        data: {
+          status: lastScan.scan_status,
+          progress: lastScan.scan_status === 'completed' ? 100 : 0,
+          tickersScanned: lastScan.tickers_scanned,
+          totalTickers: scannedCount || 400, // Use scanned count or estimate
+          signalsGenerated: lastScan.signals_generated,
+          executionTime: lastScan.execution_time_ms,
+          message: completionMessage,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Scan is in progress - calculate progress
+    const elapsedSeconds = (Date.now() - new Date(lastScan.created_at).getTime()) / 1000;
+    const avgTimePerTicker = 0.6; // ~600ms per ticker (API call + processing)
+    const estimatedTotalTime = 400 * avgTimePerTicker; // ~240 seconds for 400 tickers
+    const estimatedRemaining = Math.max(0, estimatedTotalTime - elapsedSeconds);
+    const progress = Math.min(100, Math.round((elapsedSeconds / estimatedTotalTime) * 100));
+
+    // Calculate estimated tickers scanned based on progress
+    const estimatedTickersScanned = Math.round((progress / 100) * 400);
+    const remainingMessage = estimatedRemaining > 0 
+      ? `~${Math.round(estimatedRemaining)} seconds remaining`
+      : 'completing...';
+    
+    return res.json({
+      success: true,
+      data: {
+        status: 'in_progress',
+        progress,
+        tickersScanned: lastScan.tickers_scanned,
+        totalTickers: 400, // Estimated
+        signalsGenerated: lastScan.signals_generated,
+        elapsedSeconds: Math.round(elapsedSeconds),
+        estimatedRemainingSeconds: Math.round(estimatedRemaining),
+        estimatedTotalSeconds: Math.round(estimatedTotalTime),
+        estimatedTickersScanned,
+        message: `Estimated ~${estimatedTickersScanned} / 400 tickers processed, ${remainingMessage}`,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  }
+});
+
+/**
  * Helper: Calculate next scan time (4 PM ET)
  */
 function calculateNextScanTime(): string {
@@ -286,6 +379,84 @@ router.get('/tickers', async (req: Request, res: Response) => {
         source: 'default',
         count: 400, // Approximate
         tickers: [],
+      },
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  }
+});
+
+/**
+ * POST /api/admin/tickers/reset
+ * Reset to default Russell 2000 list
+ */
+router.post('/tickers/reset', async (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+
+    // Delete all custom tickers
+    await db.run('DELETE FROM custom_tickers');
+
+    return res.json({
+      success: true,
+      data: {
+        message: 'Ticker list reset to default Russell 2000',
+        source: 'default',
+        count: 400,
+      },
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  }
+});
+
+/**
+ * GET /api/admin/cache/stats
+ * Get price cache statistics
+ */
+router.get('/cache/stats', async (req: Request, res: Response) => {
+  try {
+    const stats = priceCache.getStats();
+    
+    return res.json({
+      success: true,
+      data: {
+        ...stats,
+        message: `Cache contains ${stats.cachedTickers} tickers`,
+      },
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  }
+});
+
+/**
+ * POST /api/admin/cache/clear
+ * Clear the price cache (useful between scan sessions)
+ */
+router.post('/cache/clear', async (req: Request, res: Response) => {
+  try {
+    priceCache.clear();
+    
+    return res.json({
+      success: true,
+      data: {
+        message: 'Price cache cleared',
       },
       timestamp: new Date().toISOString(),
     } as APIResponse<any>);

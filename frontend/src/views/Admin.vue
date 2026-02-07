@@ -8,6 +8,28 @@
         {{ scanning ? 'Scanning...' : 'Force Scan Now' }}
       </button>
       <p v-if="scanMessage" class="message">{{ scanMessage }}</p>
+
+      <!-- Scan Progress -->
+      <div v-if="scanning" class="scan-progress">
+        <div class="progress-bar-container">
+          <div class="progress-bar" :style="{ width: scanProgress.progress + '%' }"></div>
+        </div>
+        <div class="progress-text">
+          <p><strong>{{ scanProgress.progress }}% Complete</strong></p>
+          <p v-if="scanProgress.tickersScanned">
+            Checked: {{ scanProgress.tickersScanned }} / {{ scanProgress.totalTickers }} tickers
+          </p>
+          <p v-if="scanProgress.signalsGenerated">
+            Signals Found: {{ scanProgress.signalsGenerated }}
+          </p>
+          <p v-if="scanProgress.estimatedRemainingSeconds && scanProgress.estimatedRemainingSeconds > 0">
+            Estimated Time Remaining: {{ formatTime(scanProgress.estimatedRemainingSeconds) }}
+          </p>
+          <p v-else-if="scanProgress.message" class="progress-message">
+            {{ scanProgress.message }}
+          </p>
+        </div>
+      </div>
     </div>
 
     <div class="admin-section">
@@ -102,7 +124,11 @@
     <div class="admin-section">
       <h2>Ticker Management</h2>
       <div class="ticker-upload">
-        <p>Upload a CSV file with one ticker per line to replace the default Russell 2000 list:</p>
+        <p>Upload a CSV file with one ticker per line to use a custom ticker list:</p>
+        <p class="ticker-note">
+          ⚠️ <strong>Note:</strong> Custom tickers will persist until you click "Reset to Russell 2000" below. 
+          They will be used for all future scans (including automated 4 PM ET scans).
+        </p>
         <div class="upload-input">
           <input 
             type="file" 
@@ -120,6 +146,13 @@
         </p>
         <p v-if="tickerSource" class="ticker-status">
           Currently using: <strong>{{ tickerSource }}</strong> ({{ tickerCount }} tickers)
+          <button 
+            v-if="tickerSource === 'Custom Upload'"
+            @click="resetTickers" 
+            class="btn btn-secondary btn-small"
+          >
+            Reset to Russell 2000
+          </button>
         </p>
       </div>
     </div>
@@ -184,6 +217,18 @@ const tickerFileSelected = ref(false)
 const tickerMessage = ref('')
 const tickerSource = ref('')
 const tickerCount = ref(0)
+let progressInterval: NodeJS.Timeout | null = null
+
+// Scan progress
+const scanProgress = ref({
+  progress: 0,
+  tickersScanned: 0,
+  totalTickers: 400,
+  signalsGenerated: 0,
+  elapsedSeconds: 0,
+  estimatedRemainingSeconds: 0,
+  message: '',
+})
 
 // Turtle Trading config
 const scanConfig = ref({
@@ -194,20 +239,55 @@ const scanConfig = ref({
 
 const lastConfigUsed = ref<any>(null)
 
+const loadScanProgress = async () => {
+  try {
+    const res = await axios.get('/api/admin/scan-progress')
+    const data = res.data.data
+
+    scanProgress.value.progress = data.progress || 0
+    scanProgress.value.tickersScanned = data.tickersScanned || 0
+    scanProgress.value.totalTickers = data.totalTickers || 400
+    scanProgress.value.signalsGenerated = data.signalsGenerated || 0
+    scanProgress.value.elapsedSeconds = data.elapsedSeconds || 0
+    scanProgress.value.estimatedRemainingSeconds = data.estimatedRemainingSeconds || 0
+    scanProgress.value.message = data.message || ''
+
+    // If scan is complete, stop polling
+    if (data.status === 'completed' || data.status === 'failed') {
+      if (progressInterval) {
+        clearInterval(progressInterval)
+        progressInterval = null
+      }
+      scanning.value = false
+      scanMessage.value = `Scan ${data.status}: ${data.signalsGenerated} signals generated`
+      await loadHealth()
+      await loadScanHistory()
+    }
+  } catch (error) {
+    console.error('Failed to load scan progress:', error)
+  }
+}
+
 const forceScan = async () => {
   scanning.value = true
   scanMessage.value = 'Starting scan...'
   try {
     const res = await axios.post('/api/admin/scan')
     scanMessage.value = res.data.data.message
-    // Reload health status after a delay
-    setTimeout(async () => {
-      await loadHealth()
+    
+    // Start polling for progress every 2 seconds
+    if (progressInterval) {
+      clearInterval(progressInterval)
+    }
+    progressInterval = setInterval(() => {
+      loadScanProgress()
     }, 2000)
+
+    // Initial progress load
+    loadScanProgress()
   } catch (error) {
     scanMessage.value = 'Scan failed!'
     console.error('Failed to start scan:', error)
-  } finally {
     scanning.value = false
   }
 }
@@ -223,15 +303,20 @@ const forceScanWithConfig = async () => {
     })
     configScanMessage.value = res.data.data.message
     lastConfigUsed.value = scanConfig.value
-    // Reload health status after a delay
-    setTimeout(async () => {
-      await loadHealth()
-      await loadScanHistory()
+
+    // Start polling for progress every 2 seconds
+    if (progressInterval) {
+      clearInterval(progressInterval)
+    }
+    progressInterval = setInterval(() => {
+      loadScanProgress()
     }, 2000)
+
+    // Initial progress load
+    loadScanProgress()
   } catch (error: any) {
     configScanMessage.value = `Error: ${error.response?.data?.error || 'Scan failed'}`
     console.error('Failed to start scan with config:', error)
-  } finally {
     scanning.value = false
   }
 }
@@ -312,6 +397,30 @@ const formatDateTime = (dateStr: string) => {
   if (!dateStr) return 'N/A'
   const date = new Date(dateStr)
   return date.toLocaleString()
+}
+
+const formatTime = (seconds: number) => {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  if (mins > 0) {
+    return `${mins}m ${secs}s`
+  }
+  return `${secs}s`
+}
+
+const resetTickers = async () => {
+  if (!confirm('Are you sure? This will reset to the default Russell 2000 ticker list.')) {
+    return
+  }
+
+  try {
+    const res = await axios.post('/api/admin/tickers/reset')
+    tickerMessage.value = `Success: ${res.data.data.message}`
+    await loadTickerStatus()
+  } catch (error) {
+    tickerMessage.value = 'Error: Failed to reset tickers'
+    console.error('Failed to reset tickers:', error)
+  }
 }
 
 onMounted(() => {
@@ -626,5 +735,64 @@ h2 {
 .last-config-info li {
   color: #2c3e50;
   margin: 0.25rem 0;
+}
+
+.scan-progress {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: #f0f7ff;
+  border: 1px solid #3498db;
+  border-radius: 8px;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 24px;
+  background: #ecf0f1;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #3498db, #2980b9);
+  transition: width 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 0.85rem;
+  font-weight: bold;
+}
+
+.progress-text {
+  color: #2c3e50;
+}
+
+.progress-text p {
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+.progress-message {
+  color: #3498db;
+  font-style: italic;
+}
+
+.ticker-note {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  padding: 0.75rem;
+  border-radius: 4px;
+  color: #856404;
+  font-size: 0.9rem;
+  margin: 1rem 0;
+}
+
+.btn-small {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+  margin-left: 1rem;
 }
 </style>

@@ -1,10 +1,11 @@
 import { getDatabase } from '../db/database.js';
 import { v4 as uuidv4 } from 'uuid';
 import { ScanTrigger, ScanStatus } from '../types/index.js';
-import { createDataFetcher } from '../data/fetcher.js';
+import { createDataFetcher, YahooFinanceFetcher } from '../data/fetcher.js';
 import { generateSignalV2 } from '../engine/signals.js';
 import { getRussell2000Tickers } from '../data/russell2000.js';
 import { ScanConfig } from '../engine/types.js';
+import { priceCache } from '../services/priceCache.js';
 
 /**
  * Perform a daily Turtle Trading scan
@@ -42,6 +43,10 @@ export async function performDailyScan(
   let filteredSignals = 0;
   let scanStatus: ScanStatus = 'in_progress';
   let errorMessage: string | undefined;
+  let apiCallsSaved = 0;
+  
+  // Start cache session for this scan
+  const cacheSessionId = priceCache.startSession();
 
   try {
     // Create scan history record
@@ -54,6 +59,7 @@ export async function performDailyScan(
 
     console.log(`[Scan ${scanHistoryId}] Starting scan with trigger: ${trigger}`);
     console.log(`[Scan ${scanHistoryId}] Config: system=${scanConfig.system}, trendFilter=${scanConfig.useTrendFilter}, stopLossMultiplier=${scanConfig.stopLossMultiplier}`);
+    console.log(`[Scan ${scanHistoryId}] Cache session: ${cacheSessionId}`);
 
     // Get tickers to scan
     if (tickersOverride && tickersOverride.length > 0) {
@@ -87,17 +93,53 @@ export async function performDailyScan(
 
     console.log(`[Scan ${scanHistoryId}] Processing ${tickers.length} tickers`);
 
-    // Create data fetcher
-    const fetcher = createDataFetcher(process.env.POLYGON_API_KEY);
+    // Create data fetcher with fallback support
+    let fetcher = createDataFetcher(process.env.POLYGON_API_KEY);
+    let fallbackFetcher: any = null;
+    let useFallback = false;
 
     // Scan each ticker
     for (const ticker of tickers) {
       try {
-        // Add delay between requests to avoid rate limiting (500ms)
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Check cache first
+        let priceData = priceCache.get(ticker);
         
-        // Fetch historical data (21+ days)
-        const priceData = await fetcher.getHistoricalData(ticker, 30);
+        if (priceData) {
+          // Cache hit - skip API call
+          apiCallsSaved++;
+          console.log(`[Scan] Cache hit for ${ticker} (${priceData.length} bars)`);
+        } else {
+          // Cache miss - fetch from API
+          // Add delay between requests to avoid rate limiting (500ms)
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Fetch historical data (21+ days) - with fallback support
+          try {
+            priceData = await fetcher.getHistoricalData(ticker, 30);
+          } catch (primaryError) {
+            // If primary fetcher fails, try fallback (Yahoo Finance)
+            if (!useFallback) {
+              console.warn(`[Scan] Primary fetcher failed, switching to Yahoo Finance fallback`);
+              useFallback = true;
+              fallbackFetcher = new YahooFinanceFetcher();
+            }
+            
+            try {
+              priceData = await fallbackFetcher.getHistoricalData(ticker, 30);
+              console.log(`[Scan] Yahoo Finance fallback succeeded for ${ticker}`);
+            } catch (fallbackError) {
+              // Both failed, log and skip this ticker
+              console.warn(`[Scan] Both fetchers failed for ${ticker}: ${primaryError instanceof Error ? primaryError.message : 'unknown error'}`);
+              tickersScanned++;
+              continue;
+            }
+          }
+          
+          // Store in cache for subsequent scans
+          if (priceData && priceData.length >= 21) {
+            priceCache.set(ticker, priceData);
+          }
+        }
 
         // Validate data quality
         if (!priceData || priceData.length < 21) {
@@ -181,9 +223,14 @@ export async function performDailyScan(
     );
 
     scanStatus = 'completed';
+    const cacheStats = priceCache.getStats();
     console.log(
-      `[Scan ${scanHistoryId}] Completed in ${executionTime}ms - Generated ${signalsGenerated} signals (${buySignals} buy, ${sellSignals} sell) | Filtered: ${filteredSignals} | System: ${scanConfig.system} | Trend Filter: ${scanConfig.useTrendFilter}`
+      `[Scan ${scanHistoryId}] Completed in ${executionTime}ms - Generated ${signalsGenerated} signals (${buySignals} buy, ${sellSignals} sell) | Filtered: ${filteredSignals} | System: ${scanConfig.system} | Trend Filter: ${scanConfig.useTrendFilter} | API Calls Saved: ${apiCallsSaved}`
     );
+    console.log(`[Scan ${scanHistoryId}] Cache Session Stats:`, cacheStats);
+    
+    // Keep cache session active for quick re-scans with different configs
+    // (Don't call priceCache.endSession() here - let it persist for related scans)
   } catch (error) {
     scanStatus = 'failed';
     errorMessage = error instanceof Error ? error.message : 'Unknown error';

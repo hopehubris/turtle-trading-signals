@@ -19,6 +19,7 @@ import tradesRouter from './routes/trades.js';
 import adminRouter from './routes/admin.js';
 import analyticsRouter from './routes/analytics.js';
 import portfolioRouter from './routes/portfolio.js';
+import reportsRouter from './routes/reports.js';
 
 // Import scheduler
 import { initializeScheduler } from './jobs/scheduler.js';
@@ -35,7 +36,9 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // Serve frontend static files
-const frontendPath = path.join(path.dirname(__dirname), '..', '..', 'frontend', 'dist');
+// __dirname = /path/to/backend/src, so go up to project root and into frontend/dist
+const frontendPath = path.join(__dirname, '..', '..', 'frontend', 'dist');
+console.log(`Serving frontend from: ${frontendPath}`);
 app.use(express.static(frontendPath));
 
 // API Routes
@@ -44,6 +47,7 @@ app.use('/api/trades', tradesRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/portfolio', portfolioRouter);
+app.use('/api/reports', reportsRouter);
 
 // Health check endpoint
 app.get('/api/health', (req: Request, res: Response) => {
