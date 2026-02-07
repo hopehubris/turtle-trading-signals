@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { getDatabase } from '../db/database.js';
 import { priceCache } from '../services/priceCache.js';
 import {
   analyzeStockMetrics,
@@ -7,9 +8,46 @@ import {
   getExtremeRSI,
   StockMetrics,
 } from '../services/dataAnalytics.js';
-import { APIResponse } from '../types/index.js';
+import { APIResponse, OHLC } from '../types/index.js';
 
 const router = Router();
+
+/**
+ * GET /api/reports
+ * Redirect to /analysis or show cache status
+ */
+router.get('/', async (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const cacheCount = await db.get('SELECT COUNT(*) as count FROM price_cache');
+    const tickerCount = await db.get('SELECT COUNT(DISTINCT ticker) as count FROM price_cache');
+    
+    if (cacheCount.count === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No cached price data. Run a scan first to populate the cache.',
+        timestamp: new Date().toISOString(),
+      } as APIResponse<any>);
+    }
+    
+    return res.json({
+      success: true,
+      data: {
+        status: 'ready',
+        cachedBars: cacheCount.count,
+        cachedTickers: tickerCount.count,
+        analysisEndpoint: '/api/reports/analysis',
+      },
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  }
+});
 
 /**
  * GET /api/reports/analysis
@@ -17,9 +55,14 @@ const router = Router();
  */
 router.get('/analysis', async (req: Request, res: Response) => {
   try {
-    const cacheStats = (global as any).priceCache?.getStats();
+    const db = getDatabase();
     
-    if (!cacheStats || cacheStats.cachedTickers === 0) {
+    // Get all unique tickers from price_cache table
+    const tickerRows = await db.all(
+      'SELECT DISTINCT ticker FROM price_cache ORDER BY ticker'
+    );
+    
+    if (!tickerRows || tickerRows.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'No cached price data. Run a scan first to populate the cache.',
@@ -27,19 +70,34 @@ router.get('/analysis', async (req: Request, res: Response) => {
       } as APIResponse<any>);
     }
 
-    // Get all cached price data
+    // Get all cached price data and analyze
     const allMetrics: StockMetrics[] = [];
-    const tickers: string[] = [];
-    
-    for (const { ticker } of cacheStats.details || []) {
-      tickers.push(ticker);
-    }
+    const tickers = tickerRows.map((r: any) => r.ticker);
 
     // Analyze each ticker
     for (const ticker of tickers) {
       try {
-        const priceData = priceCache.get(ticker);
-        if (priceData) {
+        // Try in-memory cache first
+        let priceData = priceCache.get(ticker);
+        
+        // If not in memory, fetch from database
+        if (!priceData) {
+          const bars = await db.all(
+            'SELECT date, open, high, low, close, volume FROM price_cache WHERE ticker = ? ORDER BY date',
+            [ticker]
+          );
+          
+          priceData = bars.map((bar: any) => ({
+            date: bar.date,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+          })) as OHLC[];
+        }
+        
+        if (priceData && priceData.length > 0) {
           const metrics = analyzeStockMetrics(ticker, priceData);
           allMetrics.push(metrics);
         }
