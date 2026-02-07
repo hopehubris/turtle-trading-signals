@@ -216,8 +216,8 @@ export class PolygonIOFetcher implements IDataFetcher {
   private apiKey: string;
   private baseUrl = 'https://api.polygon.io/v2/aggs/ticker';
   private tickersUrl = 'https://api.polygon.io/v3/reference/tickers';
-  private maxRetries = 3;
-  private retryDelayMs = 1000;
+  private maxRetries = 5; // More retries for DELAYED status
+  private retryDelayMs = 2000; // 2 second delay (Polygon may need time to process)
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -231,19 +231,22 @@ export class PolygonIOFetcher implements IDataFetcher {
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const endDate = new Date();
-        const startDate = new Date(
-          endDate.getTime() - days * 24 * 60 * 60 * 1000
-        );
+        // Polygon's API seems to have issues with very recent dates, so back up a day
+        const today = new Date();
+        const toDate = new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000); // Yesterday
+        const fromDate = new Date(
+          toDate.getTime() - days * 24 * 60 * 60 * 1000
+        ); // Start date (N days before yesterday)
 
         // Use Polygon's aggregate endpoint - much more efficient
         // Format: /v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
-        const fromDate = startDate.toISOString().split('T')[0].replace(/-/g, '');
-        const toDate = endDate.toISOString().split('T')[0].replace(/-/g, '');
+        // Dates should be in YYYY-MM-DD format (with hyphens)
+        const fromDateStr = fromDate.toISOString().split('T')[0]; // YYYY-MM-DD (older)
+        const toDateStr = toDate.toISOString().split('T')[0];     // YYYY-MM-DD (newer)
         
-        const url = `${this.baseUrl}/${ticker}/range/1/day/${fromDate}/${toDate}?adjusted=true&sort=asc&limit=50000&apikey=${this.apiKey}`;
+        const url = `${this.baseUrl}/${ticker}/range/1/day/${fromDateStr}/${toDateStr}?adjusted=true&sort=asc&limit=50000&apiKey=${this.apiKey}`;
         
-        console.log(`[Polygon IO] Fetching ${ticker} from ${fromDate} to ${toDate}`);
+        console.log(`[Polygon IO] Fetching ${ticker} from ${fromDateStr} to ${toDateStr}`);
         
         const response = await axios.get(url, {
           timeout: 10000,
@@ -252,6 +255,12 @@ export class PolygonIOFetcher implements IDataFetcher {
           }
         });
 
+        // Handle different response statuses
+        if (response.data.status === 'DELAYED') {
+          // API is processing - treat as retriable error
+          throw new Error(`Polygon IO request delayed (API processing)`);
+        }
+        
         if (response.data.status === 'OK' && response.data.results && Array.isArray(response.data.results)) {
           const data: OHLC[] = response.data.results.map((bar: any) => ({
             date: new Date(bar.t).toISOString().split('T')[0],
@@ -369,33 +378,20 @@ export class MockFetcher implements IDataFetcher {
 export function createDataFetcher(
   polygonApiKey?: string
 ): IDataFetcher {
-  // ACTIVE: Mock Fetcher (production-ready, unlimited, reliable)
-  // Use this for:
-  // - Backtesting and paper trading
-  // - Development and testing
-  // - Demo deployments
-  //
-  // TO SWITCH TO REAL DATA:
-  // Option A: Get free Alpha Vantage key (20+ years data, 5 req/min)
-  //   1. Sign up: https://www.alphavantage.co/api/
-  //   2. Set ALPHA_VANTAGE_KEY in .env
-  //   3. Uncomment AlphaVantageFetcher code below
-  //
-  // Option B: Use paid Polygon plan (requires upgrade)
-  //   1. Upgrade plan at polygon.io
-  //   2. Uncomment PolygonIOFetcher code below
+  // ACTIVE: Polygon IO (5 years historical data with corrected endpoint format)
+  // Fixed:
+  //   - Use YYYY-MM-DD date format (with hyphens), not YYYYMMDD
+  //   - Use apiKey parameter (capital K), not apikey
+  // 
+  // TO SWITCH TO MOCK DATA:
+  // return new MockFetcher();
   
-  console.log('[Data Fetcher] Using Mock Fetcher (synthetic data, unlimited, reliable)');
+  if (polygonApiKey && polygonApiKey.length > 10) {
+    console.log('[Data Fetcher] Using Polygon IO (5+ years historical data)');
+    return new PolygonIOFetcher(polygonApiKey);
+  }
+
+  // Fallback to Mock if no API key provided
+  console.log('[Data Fetcher] Using Mock Fetcher (fallback - no Polygon key)');
   return new MockFetcher();
-  
-  // REAL DATA OPTION A: Alpha Vantage (uncomment to use)
-  // const alphaVantageKey = process.env.ALPHA_VANTAGE_KEY || '';
-  // if (alphaVantageKey && alphaVantageKey !== 'demo') {
-  //   return new AlphaVantageFetcher(alphaVantageKey);
-  // }
-  
-  // REAL DATA OPTION B: Polygon IO (uncomment to use, requires upgraded plan)
-  // if (polygonApiKey && polygonApiKey.length > 10) {
-  //   return new PolygonIOFetcher(polygonApiKey);
-  // }
 }

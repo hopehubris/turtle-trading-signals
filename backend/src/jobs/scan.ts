@@ -113,9 +113,9 @@ export async function performDailyScan(
           // Add delay between requests to avoid rate limiting (500ms)
           await new Promise(resolve => setTimeout(resolve, 500));
           
-          // Fetch historical data (21+ days) - with fallback support
+          // Fetch historical data (5 years for Turtle Trading MA calculations)
           try {
-            priceData = await fetcher.getHistoricalData(ticker, 30);
+            priceData = await fetcher.getHistoricalData(ticker, 1825); // 5 years
           } catch (primaryError) {
             // If primary fetcher fails, try fallback (Yahoo Finance)
             if (!useFallback) {
@@ -125,7 +125,7 @@ export async function performDailyScan(
             }
             
             try {
-              priceData = await fallbackFetcher.getHistoricalData(ticker, 30);
+              priceData = await fallbackFetcher.getHistoricalData(ticker, 1825); // 5 years
               console.log(`[Scan] Yahoo Finance fallback succeeded for ${ticker}`);
             } catch (fallbackError) {
               // Both failed, log and skip this ticker
